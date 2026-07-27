@@ -7,6 +7,7 @@ import aind_dynamic_foraging_database as db
 # 1. Fast E-Step: NLL Calculator 
 # ==========================================
 def calculate_nll_fast(hyperparams, choices, rewards, num_particles=500):
+    np.random.seed(42)  # Temporarily converts objective function into a deterministic function for DE optimization
     sigma_alpha, sigma_beta = hyperparams
     num_trials = len(choices)
     
@@ -47,9 +48,9 @@ def calculate_nll_fast(hyperparams, choices, rewards, num_particles=500):
     return nll
 
 # ==========================================
-# 2. Final E-Step: FFBS Smoother 
+# 2. Final E-Step: Fixed-Lag Particle Smoother
 # ==========================================
-def execute_particle_smoother(choices, rewards, sigma_alpha, sigma_beta, num_particles=1500):
+def execute_particle_smoother(choices, rewards, sigma_alpha, sigma_beta, num_particles=1500, lag=15):
     num_trials = len(choices)
     
     particles_hist = np.zeros((num_trials, num_particles, 4))
@@ -58,9 +59,10 @@ def execute_particle_smoother(choices, rewards, sigma_alpha, sigma_beta, num_par
     particles = np.zeros((num_particles, 4))
     particles[:, 0] = np.random.uniform(0, 1, num_particles) 
     particles[:, 1] = np.random.uniform(0, 1, num_particles) 
-    particles[:, 2] = np.random.normal(np.log(0.05), 0.5, num_particles) 
-    particles[:, 3] = np.random.normal(np.log(4.0), 0.5, num_particles)  
+    particles[:, 2] = np.random.normal(np.log(0.3), 0.5, num_particles) 
+    particles[:, 3] = np.random.normal(np.log(15.0), 0.5, num_particles)  
 
+    # --- Phase 1: Forward Pass ---
     for t in range(num_trials):
         particles[:, 2] += np.random.normal(0, sigma_alpha, num_particles)
         particles[:, 3] += np.random.normal(0, sigma_beta, num_particles)
@@ -88,11 +90,21 @@ def execute_particle_smoother(choices, rewards, sigma_alpha, sigma_beta, num_par
         alpha_vals_resampled = np.clip(np.exp(particles[:, 2]), 1e-4, 0.99)
         particles[:, choices[t]] += alpha_vals_resampled * (rewards[t] - particles[:, choices[t]])
         
+    # --- Phase 2: Fixed-Lag Smoothing (Prevents Lineage Collapse) ---
     smoothed_particles = np.zeros((num_trials, num_particles, 4))
-    current_idx = np.arange(num_particles)
     
-    for t in range(num_trials - 1, -1, -1):
-        current_idx = parent_indices[t][current_idx]
+    for t in range(num_trials):
+        # Determine how far to look ahead (stops at the end of the session)
+        target_t = min(t + lag, num_trials - 1)
+        
+        # Start with all 1500 particles that survived at target_t
+        current_idx = np.arange(num_particles)
+        
+        # Trace their specific lineages backwards down to trial t
+        for step in range(target_t - 1, t - 1, -1):
+            current_idx = parent_indices[step][current_idx]
+            
+        # Extract the ancestral states at trial t
         smoothed_particles[t] = particles_hist[t][current_idx]
         
     est_Q = np.mean(smoothed_particles[:, :, :2], axis=1)
@@ -107,7 +119,7 @@ def execute_particle_smoother(choices, rewards, sigma_alpha, sigma_beta, num_par
 if __name__ == "__main__":
     print("Querying AIND Database for cohort...")
     
-    # 1. Define your cohort (e.g., highly trained mice on Uncoupled Baiting)
+    # 1. Define your cohort
     cohort_query = "task LIKE '%Uncoupled%' AND foraging_eff > 0.8 AND finished_trials > 300"
     all_sessions = db.select_sessions(where=cohort_query)
     
@@ -137,11 +149,12 @@ if __name__ == "__main__":
             bounds=[(0.001, 0.2), (0.001, 0.2)], 
             args=(choices, rewards),
             maxiter=30, popsize=15, tol=0.01, 
-            workers=-1, disp=False  # Turned off display to keep terminal clean during batching
+            workers=-1, disp=False  
         )
         opt_sigma_alpha, opt_sigma_beta = m_step_result.x
         
         # --- E-Step: Extract Smoothed Trajectories ---
+        # Note: 'lag' defaults to 15, but you can pass it explicitly here if desired
         est_Q, est_alpha, est_beta = execute_particle_smoother(
             choices, rewards, sigma_alpha=opt_sigma_alpha, sigma_beta=opt_sigma_beta
         )
