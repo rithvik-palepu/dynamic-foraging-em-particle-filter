@@ -138,8 +138,12 @@ def plot_and_save_comparison(results_df, save_path="mml_vs_psytrack_fold_compari
         results_df['fold'], results_df['MMLPF_NLL'], 
         marker='o', linewidth=2.5, color='blue', label='MMLPF Architecture (Yours)'
     )
+    
+    # Isolate PsyTrack data and drop NaNs from singular matrix failures to ensure continuous plotting
+    psy_plot_df = results_df.dropna(subset=['PsyTrack_NLL'])
+    
     plt.plot(
-        results_df['fold'], results_df['PsyTrack_NLL'], 
+        psy_plot_df['fold'], psy_plot_df['PsyTrack_NLL'], 
         marker='s', linestyle='--', linewidth=2.5, color='red', label='PsyTrack Baseline'
     )
     
