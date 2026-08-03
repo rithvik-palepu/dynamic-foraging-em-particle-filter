@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
 import psytrack
 import aind_dynamic_foraging_database as db
 from psytrack.helper.helperFunctions import read_input
@@ -30,7 +31,6 @@ def build_psytrack_dict(choices, rewards):
         'reward_history': reward_feature.reshape(-1, 1)
     }
     
-    # Double-check that these keys exactly match the keys in your weight_dict
     return {'y': y, 'inputs': inputs, 'dayLength': np.array([len(y)])}
 
 # ==========================================
@@ -61,36 +61,33 @@ def execute_psytrack_chronological_cv(session_data_list, weight_dict, hyper_gues
         print(f"  [Train: {i} Sessions | {cumulative_train_trials} Trials] --> Predicting Session {i+1} ({len(test_choices)} trials)")
         
         # --- Phase 1: Train PsyTrack ---
-        # Fits weights for all trials in the training set
-        hyp, evd, wMode, hess_info = psytrack.hyperOpt(
-            D_train, 
-            hyper_guess, 
-            weight_dict, 
-            optList, 
-            showOpt=0  # Suppress internal PsyTrack print statements
-        )
-        
-        # --- Phase 2: Test Out-of-Sample NLL ---
-        # Extract the cognitive weights from the very last trial of the training set
-        w_last = wMode[:, -1]
-        
-        # Convert test inputs into PsyTrack's 'g' matrix
-        g = read_input(D_test, weight_dict)
-        
-        test_nll = 0.0
-        
-        # Iterate through the test session and calculate the NLL
-        for t in range(len(test_choices)):
-            gw = g[t] @ w_last
-            yt = int(D_test['y'][t]) - 1  # Shifts 1/2 back to 0/1 for math[cite: 1]
+        try:
+            hyp, evd, wMode, hess_info = psytrack.hyperOpt(
+                D_train, 
+                hyper_guess, 
+                weight_dict, 
+                optList, 
+                showOpt=0  
+            )
             
-            # PsyTrack's exact log-likelihood formulation[cite: 1]
-            logli = yt * gw - np.logaddexp(0, gw)
+            # --- Phase 2: Test Out-of-Sample NLL ---
+            w_last = wMode[:, -1]
+            g = read_input(D_test, weight_dict)
             
-            # Convert to Negative Log-Likelihood to match your pipeline
-            test_nll -= logli
+            test_nll = 0.0
+            for t in range(len(test_choices)):
+                gw = g[t] @ w_last
+                yt = int(D_test['y'][t]) - 1  
+                
+                logli = yt * gw - np.logaddexp(0, gw)
+                test_nll -= logli
+                
+            avg_nll_per_trial = test_nll / len(test_choices)
             
-        avg_nll_per_trial = test_nll / len(test_choices)
+        except Exception as e:
+            print(f"  -> PsyTrack evaluation skipped on Session {i+1} due to: {e}")
+            test_nll = np.nan
+            avg_nll_per_trial = np.nan
         
         results.append({
             "test_session_number": i + 1,
@@ -103,17 +100,58 @@ def execute_psytrack_chronological_cv(session_data_list, weight_dict, hyper_gues
     return pd.DataFrame(results)
 
 # ==========================================
-# 3. AIND Database Batch Execution
+# 3. Plotting & Comparison
+# ==========================================
+def plot_and_save_comparison(psy_csv_path, mml_csv_path, save_path="mml_vs_psytrack_chronological_comparison.png"):
+    """
+    Loads both output CSVs, calculates the cohort averages, and generates the comparison plot.
+    """
+    try:
+        psy_df = pd.read_csv(psy_csv_path)
+        mml_df = pd.read_csv(mml_csv_path)
+        
+        # Drop NaNs before aggregating to prevent singular matrix failures from breaking the line
+        psy_avg = psy_df.dropna(subset=['avg_nll_per_trial']).groupby('test_session_number')['avg_nll_per_trial'].mean().reset_index()
+        mml_avg = mml_df.groupby('test_session_number')['avg_nll_per_trial'].mean().reset_index()
+        
+        plt.figure(figsize=(10, 6))
+        
+        plt.plot(
+            mml_avg['test_session_number'], mml_avg['avg_nll_per_trial'], 
+            color='blue', linewidth=3, marker='o', label='MMLPF'
+        )
+        plt.plot(
+            psy_avg['test_session_number'], psy_avg['avg_nll_per_trial'], 
+            color='red', linewidth=3, marker='s', linestyle='--', label='PsyTrack Baseline'
+        )
+        
+        plt.title('Chronological Walk-Forward CV: MML vs PsyTrack (Cohort Average)', fontsize=14)
+        plt.xlabel('Test Session Number (Chronological)', fontsize=12)
+        plt.ylabel('Average Out-of-Sample NLL per Trial\n(Lower is Better)', fontsize=12)
+        
+        all_sessions = sorted(list(set(mml_avg['test_session_number']).union(set(psy_avg['test_session_number']))))
+        plt.xticks(all_sessions)
+        
+        plt.legend(fontsize=11)
+        plt.grid(True, linestyle='--', alpha=0.7)
+        plt.tight_layout()
+        
+        plt.savefig(save_path, dpi=300)
+        print(f"\nComparison plot successfully saved to '{save_path}'")
+        plt.show()
+    except Exception as e:
+        print(f"\nError generating comparison plot: {e}")
+
+# ==========================================
+# 4. Main Execution
 # ==========================================
 if __name__ == "__main__":
     print("Querying AIND Database for highly trained cohort...")
     
-    # 1. Fetch exactly as we did for your MML model
     cohort_query = "task LIKE '%Uncoupled%' AND foraging_eff > 0.8 AND finished_trials > 300"
     all_sessions = db.select_sessions(where=cohort_query)
     all_sessions = all_sessions.sort_values(by=['subject_id', 'session_date'])
     
-    # Filter for subjects with between 4 and 10 valid sessions
     session_counts = all_sessions['subject_id'].value_counts()
     valid_subjects = session_counts[session_counts.between(4, 10)].index.unique()
     
@@ -123,8 +161,6 @@ if __name__ == "__main__":
     trials_df = db.fetch_trials(test_sessions, columns=["animal_response", "earned_reward"])
     valid_trials_df = trials_df[trials_df['animal_response'] != 2].copy()
     
-    # 2. Define PsyTrack Hyperparameters
-    # We will fit 'bias' and 'reward_history' with standard Gaussian random walks
     weight_dict = {'bias': 1, 'reward_history': 1}
     hyper_guess = {'sigma': [2**-5, 2**-5], 'sigInit': 2**5, 'sigDay': 2**5}
     optList = ['sigma']
@@ -154,3 +190,7 @@ if __name__ == "__main__":
         export_filename = "psytrack_chronological_cv.csv"
         final_cv_df.to_csv(export_filename, index=False)
         print(f"\nCross-validation complete! Results saved to '{export_filename}'")
+        
+        # Run comparison plot automatically
+        mml_baseline_path = "data/chronological_walk_forward_cv.csv"
+        plot_and_save_comparison(export_filename, mml_baseline_path)
