@@ -11,7 +11,7 @@
 export TMPDIR="/allen/programs/celltypes/workgroups/mousecelltypes/rithvik.palepu/"
 
 # Activate designated virtual environment
-source activate cv_env
+source ~/miniconda3/bin/activate cv_env
 
 # Navigate to the specific project directory where you cloned the repo
 cd ~/dynamic-foraging-mml-particle-filter/mml-pf-dynamic-foraging/
