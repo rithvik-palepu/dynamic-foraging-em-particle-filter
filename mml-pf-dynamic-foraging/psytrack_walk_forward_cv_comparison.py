@@ -5,18 +5,19 @@ import psytrack
 import aind_dynamic_foraging_database as db
 from psytrack.helper.helperFunctions import read_input
 
+# Import the MMLPF walk-forward function to compartmentalize and reduce lines of code[cite: 4]
+from cross_validation import execute_chronological_walk_forward
+
 # ==========================================
 # 1. PsyTrack Data Formatting
 # ==========================================
 def build_psytrack_dict(choices, rewards):
     """
     Formats raw choice and reward arrays into the specific dictionary structure 
-    PsyTrack requires, ensuring strict (N, 1) matrix dimensions.
+    PsyTrack requires, ensuring strict (N, 1) matrix dimensions[cite: 3].
     """
-    # Shift 0/1 choices to 1/2 for PsyTrack's internal math
     y = choices + 1 
     
-    # Calculate the Win-Stay/Lose-Shift feature
     past_choice = np.insert(choices[:-1], 0, 0)
     past_reward = np.insert(rewards[:-1], 0, 0)
     
@@ -24,8 +25,6 @@ def build_psytrack_dict(choices, rewards):
     reward_feature[(past_choice == 1) & (past_reward == 1)] = 1
     reward_feature[(past_choice == 0) & (past_reward == 1)] = -1
     
-    # FIX: PsyTrack strictly requires input features to be 2D arrays (N, 1)
-    # Using np.ones((N, 1)) and .reshape(-1, 1) forces this alignment.
     inputs = {
         'bias': np.ones((len(y), 1)),
         'reward_history': reward_feature.reshape(-1, 1)
@@ -39,38 +38,28 @@ def build_psytrack_dict(choices, rewards):
 def execute_psytrack_chronological_cv(session_data_list, weight_dict, hyper_guess, optList):
     """
     Trains PsyTrack on accumulated past sessions and tests its out-of-sample 
-    Negative Log-Likelihood on the subsequent chronological session.
+    Negative Log-Likelihood on the subsequent chronological session[cite: 3].
     """
     results = []
     cumulative_train_trials = 0
     
-    # Start testing at Session index 1, so we have Session 0 to train on
     for i in range(1, len(session_data_list)):
-        
-        # --- Prepare Cumulative Training Data ---
         train_choices = np.concatenate([s[0] for s in session_data_list[:i]])
         train_rewards = np.concatenate([s[1] for s in session_data_list[:i]])
         cumulative_train_trials = len(train_choices)
         
         D_train = build_psytrack_dict(train_choices, train_rewards)
         
-        # --- Prepare Upcoming Test Data ---
         test_choices, test_rewards = session_data_list[i]
         D_test = build_psytrack_dict(test_choices, test_rewards)
         
-        print(f"  [Train: {i} Sessions | {cumulative_train_trials} Trials] --> Predicting Session {i+1} ({len(test_choices)} trials)")
+        print(f"  [PsyTrack Train: {i} Sessions | {cumulative_train_trials} Trials] --> Predicting Session {i+1} ({len(test_choices)} trials)")
         
-        # --- Phase 1: Train PsyTrack ---
         try:
             hyp, evd, wMode, hess_info = psytrack.hyperOpt(
-                D_train, 
-                hyper_guess, 
-                weight_dict, 
-                optList, 
-                showOpt=0  
+                D_train, hyper_guess, weight_dict, optList, showOpt=0  
             )
             
-            # --- Phase 2: Test Out-of-Sample NLL ---
             w_last = wMode[:, -1]
             g = read_input(D_test, weight_dict)
             
@@ -104,13 +93,12 @@ def execute_psytrack_chronological_cv(session_data_list, weight_dict, hyper_gues
 # ==========================================
 def plot_and_save_comparison(psy_csv_path, mml_csv_path, save_path="mml_vs_psytrack_chronological_comparison.png"):
     """
-    Loads both output CSVs, calculates the cohort averages, and generates the comparison plot.
+    Loads both output CSVs, calculates the cohort averages, and generates the comparison plot[cite: 3].
     """
     try:
         psy_df = pd.read_csv(psy_csv_path)
         mml_df = pd.read_csv(mml_csv_path)
         
-        # Drop NaNs before aggregating to prevent singular matrix failures from breaking the line
         psy_avg = psy_df.dropna(subset=['avg_nll_per_trial']).groupby('test_session_number')['avg_nll_per_trial'].mean().reset_index()
         mml_avg = mml_df.groupby('test_session_number')['avg_nll_per_trial'].mean().reset_index()
         
@@ -118,7 +106,7 @@ def plot_and_save_comparison(psy_csv_path, mml_csv_path, save_path="mml_vs_psytr
         
         plt.plot(
             mml_avg['test_session_number'], mml_avg['avg_nll_per_trial'], 
-            color='blue', linewidth=3, marker='o', label='MMLPF'
+            color='blue', linewidth=3, marker='o', label='MMLPF Architecture (Yours)'
         )
         plt.plot(
             psy_avg['test_session_number'], psy_avg['avg_nll_per_trial'], 
@@ -138,7 +126,6 @@ def plot_and_save_comparison(psy_csv_path, mml_csv_path, save_path="mml_vs_psytr
         
         plt.savefig(save_path, dpi=300)
         print(f"\nComparison plot successfully saved to '{save_path}'")
-        plt.show()
     except Exception as e:
         print(f"\nError generating comparison plot: {e}")
 
@@ -146,16 +133,19 @@ def plot_and_save_comparison(psy_csv_path, mml_csv_path, save_path="mml_vs_psytr
 # 4. Main Execution
 # ==========================================
 if __name__ == "__main__":
-    print("Querying AIND Database for highly trained cohort...")
+    print("Querying AIND Database for expanded HPC cohort...")
     
-    cohort_query = "task LIKE '%Uncoupled%' AND foraging_eff > 0.8 AND finished_trials > 300"
+    # Relaxed parameters: 0.65 efficiency to capture a more representative population 
+    cohort_query = "task LIKE '%Uncoupled%' AND foraging_eff > 0.65 AND finished_trials > 300"
     all_sessions = db.select_sessions(where=cohort_query)
     all_sessions = all_sessions.sort_values(by=['subject_id', 'session_date'])
     
+    # Require at least 4 sessions, but remove the maximum cap for the HPC 
     session_counts = all_sessions['subject_id'].value_counts()
-    valid_subjects = session_counts[session_counts.between(4, 10)].index.unique()
+    valid_subjects = session_counts[session_counts >= 4].index.unique()
     
-    subjects_to_test = valid_subjects[:2]
+    # Expand testing pool to 20 mice for the cluster 
+    subjects_to_test = valid_subjects[:20]
     test_sessions = all_sessions[all_sessions['subject_id'].isin(subjects_to_test)]
     
     trials_df = db.fetch_trials(test_sessions, columns=["animal_response", "earned_reward"])
@@ -166,10 +156,11 @@ if __name__ == "__main__":
     optList = ['sigma']
     
     all_psytrack_results = []
+    all_mml_results = []
     
     for subject_id, subject_data in valid_trials_df.groupby('subject_id'):
         print(f"\n==========================================")
-        print(f"Executing PsyTrack Chronological CV for Subject: {subject_id}")
+        print(f"Executing Dual CV for Subject: {subject_id}")
         print(f"==========================================")
         
         session_data_list = []
@@ -178,19 +169,32 @@ if __name__ == "__main__":
             rewards = session_data['earned_reward'].astype(int).values
             session_data_list.append((choices, rewards))
             
-        print(f"Loaded {len(session_data_list)} consecutive sessions.")
+        print(f"Loaded {len(session_data_list)} consecutive sessions.\n")
         
         if len(session_data_list) > 1:
-            subject_cv_df = execute_psytrack_chronological_cv(session_data_list, weight_dict, hyper_guess, optList)
-            subject_cv_df.insert(0, 'subject_id', subject_id)
-            all_psytrack_results.append(subject_cv_df)
+            # 1. Run MMLPF Walk-Forward[cite: 4]
+            print(">>> Starting MMLPF Architecture Evaluation...")
+            subject_mml_df = execute_chronological_walk_forward(session_data_list)
+            subject_mml_df.insert(0, 'subject_id', subject_id)
+            all_mml_results.append(subject_mml_df)
             
-    if all_psytrack_results:
-        final_cv_df = pd.concat(all_psytrack_results, ignore_index=True)
-        export_filename = "psytrack_chronological_cv.csv"
-        final_cv_df.to_csv(export_filename, index=False)
-        print(f"\nCross-validation complete! Results saved to '{export_filename}'")
+            # 2. Run PsyTrack Walk-Forward[cite: 3]
+            print("\n>>> Starting PsyTrack Baseline Evaluation...")
+            subject_psy_df = execute_psytrack_chronological_cv(session_data_list, weight_dict, hyper_guess, optList)
+            subject_psy_df.insert(0, 'subject_id', subject_id)
+            all_psytrack_results.append(subject_psy_df)
+            
+    if all_mml_results and all_psytrack_results:
+        # Save MMLPF Results[cite: 4]
+        final_mml_df = pd.concat(all_mml_results, ignore_index=True)
+        mml_export = "mmlpf_chronological_walk_forward_cv.csv"
+        final_mml_df.to_csv(mml_export, index=False)
         
-        # Run comparison plot automatically
-        mml_baseline_path = "data/chronological_walk_forward_cv.csv"
-        plot_and_save_comparison(export_filename, mml_baseline_path)
+        # Save PsyTrack Results[cite: 3]
+        final_psy_df = pd.concat(all_psytrack_results, ignore_index=True)
+        psy_export = "psytrack_chronological_walk_forward_cv.csv"
+        final_psy_df.to_csv(psy_export, index=False)
+        
+        print(f"\nBatch processing complete for all subjects!")
+        
+        plot_and_save_comparison(psy_export, mml_export)
