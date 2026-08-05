@@ -10,8 +10,8 @@
 # Update the temporary path used by pip/conda 
 export TMPDIR="/allen/programs/celltypes/workgroups/mousecelltypes/rithvik.palepu/"
 
-# Activate your designated virtual environment
-source activate torch19
+# Activate designated virtual environment
+source activate cv_env
 
 # Navigate to the specific project directory where you cloned the repo
 cd ~/dynamic-foraging-mml-particle-filter/mml-pf-dynamic-foraging/
