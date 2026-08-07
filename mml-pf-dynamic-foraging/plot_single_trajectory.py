@@ -4,8 +4,6 @@ import numpy as np
 import aind_dynamic_foraging_database as db
 from scipy.optimize import differential_evolution
 
-# Force headless plotting for the HPC
-matplotlib.use('Agg')
 
 # Import the actual methods present in your file
 from empirical_drifting_agent_mml_pf import calculate_nll_fast, execute_particle_smoother
@@ -56,6 +54,7 @@ def generate_trajectory_plot(subject_id=651554):
     ax.set_ylabel('Latent Action Value (Q)', fontsize=12)
     ax.legend(loc='upper right', fontsize=10)
     ax.grid(True, linestyle='--', alpha=0.5)
+    ax.set_xlim(0, 500) # Zooms in on just the first 500 trials
     
     plt.tight_layout()
     save_path = f"latent_trajectory_mmlpf_{subject_id}.png"
